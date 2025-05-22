@@ -17,8 +17,8 @@ import { GoogleGenAI } from "@google/genai";
 interface Preferences {
   vault: string;
   aiPrompt: string;
-  googleApiKey: string;    // Your Gemini API key from AI Studio
-  modelId: string;         // e.g. "gemini-2.0-flash-001"
+  googleApiKey: string;    
+  modelId: string;         
 }
 
 interface FormValues {
@@ -55,7 +55,7 @@ export default function Command() {
     }
 
     try {
-      // 1) Determine pageTitle
+      // 1) Determine page title
       let pageTitle = values.titleField?.trim();
       if (!pageTitle) {
         const r = await fetch(values.urlField);
@@ -63,7 +63,7 @@ export default function Command() {
         pageTitle = $("title").first().text().trim() || "untitled";
       }
 
-      // 2) Sanitize filename & build paths
+      // 2) Sanitize filename & build path
       const safeTitle = pageTitle.replace(/[<>:"/\\|?*]+/g, "").slice(0, 200);
       const folderPath = values.folderField
         ? `${preferences.vault}/${values.folderField}`
@@ -81,29 +81,27 @@ export default function Command() {
       // 4) Fetch & extract all paragraphs
       const r2 = await fetch(values.urlField);
       const $2 = cheerio.load(await r2.text());
-      const fullParagraphs = $2("p")
-        .toArray()
-        .map((p) => $2(p).text())
-        .join(" ");
+      const paragraphs: string[] = [];
+      $2("p").each((_, p) => {
+        const txt = $2(p).text().trim();
+        if (txt) paragraphs.push(txt);
+      });
 
-      // 5) Chunk to first 700 words for summarization
-      const words = fullParagraphs.trim().split(/\s+/);
+      // Prepare snippet for AI
+      const fullContent = paragraphs.join("\n\n");
+      const words = fullContent.split(/\s+/);
       const MAX_WORDS = 700;
-      const snippet =
-        words.length > MAX_WORDS
-          ? words.slice(0, MAX_WORDS).join(" ") + " ..."
-          : fullParagraphs;
+      const snippetWords = words.length > MAX_WORDS ? words.slice(0, MAX_WORDS) : words;
+      const snippet = snippetWords.join(" ") + (words.length > MAX_WORDS ? " ..." : "");
 
-      // 6) Call AI if enabled
+      // 5) Generate summary (unless disabled)
       let summaryContent = "";
       if (!extractContent && snippet) {
         await showToast({ style: Toast.Style.Animated, title: "AI", message: "Summarizing content…" });
         try {
           let aiRaw = await callGoogleGemini(preferences.aiPrompt + snippet);
-          // strip any leading “Here’s…” sentence
-          aiRaw = aiRaw.replace(/^Here['’]s.*?\n/, "");
-          // normalize bullets: "*   " → "- "
-          aiRaw = aiRaw.replace(/^\s*\*\s*/gm, "- ");
+          aiRaw = aiRaw.replace(/^Here['’]s.*?\n/, "");      // strip preamble
+          aiRaw = aiRaw.replace(/^\s*\*\s*/gm, "- ");        // normalize bullets
           summaryContent = aiRaw.trim();
         } catch (err) {
           console.error(err);
@@ -120,30 +118,32 @@ export default function Command() {
         summaryContent = "No content to summarize.";
       }
 
-      // 7) Assemble Markdown
+      // 6) Assemble Markdown
       const details = [
-        `> [!info] Details`,
+        `\n> [!info] Details`,
         `> **Title:** ${pageTitle}`,
         `> **URL:** ${values.urlField}`,
       ];
       if (tagsLine) details.push(tagsLine);
 
-      const markdown = [
-        ...details,
-        "",
-        `> [!documentation] Comments`,
-        values.commentField || "_no comments_",
-        "",
-        `## AI Summary`,
-        "",
-        summaryContent,
-        "",
-        `## Page Content`,
-        "",
-        fullParagraphs,
-      ].join("\n");
+      const commentText = (values.commentField || "_no comments_").replace(/\r?\n+/g, " ").trim();
 
-      // 8) Write file
+      // Header + summary
+      const headerBlock = [
+        details.join("\n"),
+        `> [!documentation] Comments\n${commentText}`,
+        `## AI Summary`,
+        summaryContent,
+      ].join("\n\n");
+
+      // Only include Page Content if summary was actually generated
+      let markdown = headerBlock;
+      if (!extractContent) {
+        const pageContentBlock = ["## Page Content", ...paragraphs].join("\n\n");
+        markdown += `\n\n${pageContentBlock}`;
+      }
+
+      // 7) Write file
       await fs.mkdir(folderPath, { recursive: true });
       await fs.writeFile(`${folderPath}/${safeTitle}.md`, markdown);
       await showToast({ style: Toast.Style.Success, title: "Success", message: `Clipping "${pageTitle}" created.` });
@@ -191,8 +191,8 @@ export default function Command() {
       <Form.TextArea id="commentField" title="Comment(s)" placeholder={description} enableMarkdown />
       <Form.Checkbox
         id="extractContent"
-        label="Disable AI Summarization"
-        info="Check if you only want to save metadata"
+        label="Enable AI Summarization & Page Content"
+        info="Check if you only want summary and page content."
         defaultValue={extractContent}
         onChange={() => setExtractContent(!extractContent)}
       />
